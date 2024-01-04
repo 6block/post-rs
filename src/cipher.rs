@@ -4,6 +4,7 @@ use aes::Aes128;
 #[derive(Debug)]
 pub(crate) struct AesCipher {
     pub(crate) aes: Aes128,
+    pub(crate) key: [u8;16],
     pub(crate) nonce_group: u32,
     pub(crate) pow: u64,
 }
@@ -16,10 +17,13 @@ impl AesCipher {
         hasher.update(challenge);
         hasher.update(&nonce_group.to_le_bytes());
         hasher.update(&pow.to_le_bytes());
+        let mut key = [0u8; 16];
+        key.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
         Self {
             aes: Aes128::new(GenericArray::from_slice(
-                &hasher.finalize().as_bytes()[..16],
+                key.as_slice(),
             )),
+            key,
             nonce_group,
             pow,
         }
@@ -31,10 +35,13 @@ impl AesCipher {
         hasher.update(&nonce_group.to_le_bytes());
         hasher.update(&pow.to_le_bytes());
         hasher.update(&nonce.to_le_bytes());
+        let mut key = [0u8; 16];
+        key.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
         Self {
             aes: Aes128::new(GenericArray::from_slice(
                 &hasher.finalize().as_bytes()[..16],
             )),
+            key,
             nonce_group,
             pow,
         }

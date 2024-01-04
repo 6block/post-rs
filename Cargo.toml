@@ -38,7 +38,8 @@ rand = "0.8.5"
 log = "0.4.17"
 randomx-rs = { git = "https://github.com/spacemeshos/randomx-rs", rev = "d46bcd90e09428883e253b8203d6b311b0a07b91" }
 
-
+spacemesh-cuda = {git = "ssh://git@github.com/6block/spacemesh-cuda.git", rev = "9ba09bd9"}
+#spacemesh-cuda = {path = "../spacemesh-cuda/rust"}
 primitive-types = "0.12.1"
 thiserror = "1.0.40"
 thread_local = "1.1.7"

@@ -23,7 +23,7 @@ use randomx_rs::RandomXFlag;
 use rayon::prelude::{ParallelBridge, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
-
+use spacemesh_cuda::{choose_device, get_device_num, Prover as CudaProver};
 use crate::{
     cipher::AesCipher,
     compression::{compress_indices, required_bits},
@@ -329,14 +329,90 @@ where
                             let mut indexes = indexes.lock().unwrap();
                             let vec = indexes.entry(nonce).or_default();
                             vec.push(index);
-                            if vec.len() >= cfg.k2 as usize {
-                                return Some(std::mem::take(vec));
-                            }
+                            //仅为了做测试对比CPU和GPU计算结果而注释掉
+                            // if vec.len() >= cfg.k2 as usize {
+                            //     return Some(std::mem::take(vec));
+                            // }
                             None
                         },
                     )
                 })
         });
+
+        let label_num = metadata.labels_per_unit * metadata.num_units as u64;
+        let label_len = label_num * 16u64;
+        if label_len > usize::MAX as u64 {
+            panic!("Length of labels is too large");
+        }
+
+        let mut labels_buf = vec![0u8; label_num as usize * 16usize];
+        let data_reader = read_data(datadir, 1024 * 1024, metadata.max_file_size)?;
+        for b in data_reader.into_iter() {
+            labels_buf.splice(b.pos as usize..b.pos as usize + b.data.len(), b.data);
+        }
+        let mut msb_key_buf = vec![[0u8;BLOCK_SIZE]; prover.ciphers.len()];
+        let mut lsb_key_buf = vec![[0u8;BLOCK_SIZE]; msb_key_buf.len() * Prover8_56::NONCES_PER_AES as usize];
+        for (i, c) in prover.ciphers.iter().enumerate() {
+            msb_key_buf[i].copy_from_slice(c.key.as_slice());
+        }
+        for (i, c) in prover.lazy_ciphers.iter().enumerate() {
+            lsb_key_buf[i].copy_from_slice(c.key.as_slice());
+        }
+        let device_count = get_device_num();
+        choose_device(device_count - 1).expect("");
+        let mut cuda_prover = CudaProver::new().expect("");
+        let max_result_num : u32 = cfg.k2 * 4 * nonces as u32;
+
+        let gpu_result = cuda_prover.prove(msb_key_buf.as_slice(),
+                                          lsb_key_buf.as_slice(),
+                                          labels_buf.as_slice(),
+                                          0,
+                                          start_nonce,
+                                          prover.difficulty_msb,
+                                          prover.difficulty_lsb,
+                                          max_result_num).expect("");
+
+        let mut cpu_result = indexes.lock().unwrap().clone();
+        // let mut cpu_result_dump : Vec<(u32, Vec<u64>)> = cpu_result.iter().map(|v| {
+        //     let mut vec = v.1.clone();
+        //     vec.sort();
+        //     (*v.0, vec)
+        // }).collect();
+        // cpu_result_dump.sort_by(|a, b| a.0.cmp(&b.0));
+        // println!("CPU result:{:?}", cpu_result_dump);
+        // let mut gpu_result_map : HashMap<u32, Vec<u64>> = HashMap::new();
+        // for (nonce, label_index) in &gpu_result {
+        //     let t = gpu_result_map.entry(*nonce).or_default();
+        //     if t.iter().position(|&x| x == *label_index).is_some() {
+        //         println!("Duplicate gpu result:({},{})", nonce, label_index);
+        //     } else {
+        //         t.push(*label_index);
+        //     }
+        // }
+        // let mut gpu_result_dump : Vec<(u32, Vec<u64>)> = gpu_result_map.iter().map(|v| {
+        //     let mut vec = v.1.clone();
+        //     vec.sort();
+        //     (*v.0, vec)
+        // }).collect();
+        // gpu_result_dump.sort_by(|a, b| a.0.cmp(&b.0));
+        // println!("GPU result:{:?}", gpu_result_dump);
+        //Compare GPU and CPU result
+        for (nonce, label_index) in gpu_result {
+            let label_indexes = cpu_result.entry(nonce).or_default();
+            if let Some(index) = label_indexes.iter().position(|&x| x == label_index) {
+                label_indexes.remove(index);
+                if label_indexes.is_empty() {
+                    cpu_result.remove(&nonce);
+                }
+            } else {
+                panic!("Can not find GPU result ({},{}) in CPU result", nonce, label_index);
+            }
+        }
+        if !cpu_result.is_empty() {
+            panic!("CPU result has more elements than GPU result");
+        } else {
+            println!("CPU result == GPU result");
+        }
 
         let read_mins = read_time.elapsed().as_secs() / 60;
         log::info!("Finished reading POST data in {} minutes", read_mins);
